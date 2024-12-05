@@ -206,7 +206,7 @@ fun BluetoothConnectionScreen(
         LazyColumn(modifier = modifier) {
             items(discoveredDevices) { device ->
                 device.name?.let {
-                    Text(`
+                    Text(
                         text = it,
                         modifier = Modifier.padding(vertical = 8.dp).clickable {
                             isConnecting = true
