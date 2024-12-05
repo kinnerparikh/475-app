@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">Sleep Sensor</string>
+    <string name="light_sensor_name">Light Sensor</string>
+    <string name="accelerometer_sensor_name">Accelerometer</string>
+    <string name="temperature_sensor_name">Thermometer</string>
+    <string name="heart_rate_sensor_name">Heart Rate</string>
+    <string name="gyroscope_sensor_name">Gyroscope</string>
+</resources>
