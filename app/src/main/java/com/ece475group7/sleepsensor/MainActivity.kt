@@ -11,9 +11,11 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -68,6 +70,7 @@ import com.ece475group7.sleepsensor.model.SleepSensor
 import com.ece475group7.sleepsensor.ui.theme.SleepSensorTheme
 
 class MainActivity : ComponentActivity() {
+    @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -84,12 +87,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@RequiresApi(Build.VERSION_CODES.S)
 @Preview
 @Composable
 fun SleepApp() {
     val context = LocalContext.current
     var isDropdownExpanded by remember { mutableStateOf(false) }
     var deviceConnectedToName by remember {mutableStateOf<String?>(null)}
+    val connectionManager = remember { BluetoothConnectionManager(context) }
     val layoutDirection = LocalLayoutDirection.current
     Column(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -135,10 +140,14 @@ fun SleepApp() {
         ) {
             if (isDropdownExpanded && deviceConnectedToName == null) {
                 BluetoothConnectionScreen(
+                    connectionManager = connectionManager,
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     onDeviceConnected = { deviceName ->
                         deviceConnectedToName = deviceName
                         isDropdownExpanded = false
+                    },
+                    onDeviceDisconnected = {
+                        deviceConnectedToName = null
                     }
                 )
             }
@@ -149,26 +158,19 @@ fun SleepApp() {
 
         SensorsList(sensorList = Datasource().loadSensors())
     }
-
-    fun disconnectFromDevice() {
-        if (
-            ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
-            ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-        ) { return }
-        BluetoothManager.mBluetoothGatt?.disconnect()
-        BluetoothManager.mBluetoothGatt = null
-    }
 }
 
+@RequiresApi(Build.VERSION_CODES.S)
 @Composable
 fun BluetoothConnectionScreen(
+    connectionManager : BluetoothConnectionManager,
     modifier: Modifier = Modifier,
-    context : Context = LocalContext.current,
-    onDeviceConnected: (String) -> Unit
+    onDeviceConnected: (String) -> Unit,
+    onDeviceDisconnected: () -> Unit
 ) {
+    val context = LocalContext.current
     val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
     var discoveredDevices by remember { mutableStateOf(listOf<BluetoothDevice>()) }
-    var selectedDevice by remember { mutableStateOf<BluetoothDevice?>(null) }
     var isConnecting by remember { mutableStateOf(false) }
 
     if (
@@ -200,36 +202,16 @@ fun BluetoothConnectionScreen(
         }
     }
 
-    fun connectToDevice(device: BluetoothDevice) {
-        isConnecting = true
-
-        BluetoothManager.mBluetoothGatt =
-            device.connectGatt(context, false, object : BluetoothGattCallback() {
-                @SuppressLint("MissingPermission")
-                override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
-                    if (newState == BluetoothGatt.STATE_CONNECTED) {
-                        // Connected to the GATT server
-                        isConnecting = false
-                        selectedDevice = device
-                        onDeviceConnected(device.name ?: "Unnamed Device")
-
-                    } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
-                        // Disconnected from the GATT server
-                        isConnecting = false
-                        selectedDevice = null
-                    }
-                }
-            }
-        )
-    }
-
     Column {
         LazyColumn(modifier = modifier) {
             items(discoveredDevices) { device ->
                 device.name?.let {
-                    Text(
+                    Text(`
                         text = it,
-                        modifier = Modifier.padding(vertical = 8.dp).clickable { connectToDevice(device) }
+                        modifier = Modifier.padding(vertical = 8.dp).clickable {
+                            isConnecting = true
+                            connectionManager.connectToDevice(device, onDeviceConnected, onDeviceDisconnected)
+                        }
                     )
                 }
             }
