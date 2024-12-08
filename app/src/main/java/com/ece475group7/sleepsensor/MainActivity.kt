@@ -2,6 +2,7 @@ package com.ece475group7.sleepsensor
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
@@ -13,8 +14,10 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -65,27 +68,76 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.ece475group7.sleepsensor.data.Datasource
 import com.ece475group7.sleepsensor.model.SleepSensor
 import com.ece475group7.sleepsensor.ui.theme.SleepSensorTheme
 
+// Bluetooth permissions
+const val REQUEST_BLUETOOTH_PERMISSIONS = 1
+
 class MainActivity : ComponentActivity() {
+
+    // Register an ActivityResultLauncher to handle permission requests
+    private val requestBluetoothPermissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            // Callback for the results of the permissions request
+            val deniedPermissions = permissions.filterValues { !it }
+            if (deniedPermissions.isEmpty()) {
+                // All permissions are granted
+                Toast.makeText(this, "Permissions granted!", Toast.LENGTH_SHORT).show()
+            } else {
+                // Some or all permissions were denied
+                Toast.makeText(this, "Bluetooth permissions are required!", Toast.LENGTH_LONG).show()
+            }
+        }
+
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Ensure Bluetooth permissions
+        ensureBluetoothPermissions()
+
         setContent {
             SleepSensorTheme {
-                // A surface container using the 'background' color from the theme
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.background
                 ) {
                     SleepApp()
                 }
             }
         }
     }
+
+    private fun ensureBluetoothPermissions() {
+        // List of permissions needed
+        val permissions = mutableListOf(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.BLUETOOTH_ADMIN
+        )
+
+        // Add new permissions for Android 12 and above
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions += listOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            )
+        }
+
+        // Check if permissions are already granted
+        val missingPermissions = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
+            // Launch the permission request dialog
+            requestBluetoothPermissionsLauncher.launch(missingPermissions.toTypedArray())
+        }
+    }
 }
+
 
 @RequiresApi(Build.VERSION_CODES.S)
 @Preview
