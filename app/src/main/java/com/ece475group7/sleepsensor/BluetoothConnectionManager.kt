@@ -1,23 +1,22 @@
+// file: BluetoothConnectionManager.kt
 package com.ece475group7.sleepsensor
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothGatt
-import android.bluetooth.BluetoothGattCallback
-import android.bluetooth.BluetoothGattCharacteristic
-import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.*
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.ActivityCompat
-import com.ece475group7.sleepsensor.BluetoothManager
+import org.json.JSONObject
 import java.util.UUID
 
-class BluetoothConnectionManager(private val context: Context) {
+class BluetoothConnectionManager(
+    private val context: Context,
+    private val onSensorDataReceived: (String, String) -> Unit
+) {
 
     private var onDeviceConnected: ((String) -> Unit)? = null
     private var onDeviceDisconnected: (() -> Unit)? = null
@@ -26,11 +25,13 @@ class BluetoothConnectionManager(private val context: Context) {
     @RequiresApi(Build.VERSION_CODES.S)
     fun connectToDevice(device: BluetoothDevice, onDeviceConnected: (String) -> Unit, onDeviceDisconnected: () -> Unit) {
         if (!verifyBluetoothPermissions()) {
+            Log.e("BluetoothConnectionManager", "Permissions not granted. Cannot connect to device.")
             return
         }
         this.onDeviceConnected = onDeviceConnected
         this.onDeviceDisconnected = onDeviceDisconnected
         // Connect to the device
+        Log.d("BluetoothConnectionManager", "Attempting to connect to device: ${device.name} - ${device.address}")
         BluetoothManager.mBluetoothGatt = device.connectGatt(context, false, gattCallback)
     }
 
@@ -38,10 +39,12 @@ class BluetoothConnectionManager(private val context: Context) {
     @RequiresApi(Build.VERSION_CODES.S)
     fun disconnectFromDevice() {
         if (!verifyBluetoothPermissions()) {
+            Log.e("BluetoothConnectionManager", "Permissions not granted. Cannot disconnect from device.")
             return
         }
         BluetoothManager.mBluetoothGatt?.disconnect()
         BluetoothManager.mBluetoothGatt = null
+        Log.d("BluetoothConnectionManager", "Disconnected from device.")
         onDeviceDisconnected?.invoke()
     }
 
@@ -49,14 +52,37 @@ class BluetoothConnectionManager(private val context: Context) {
         @SuppressLint("MissingPermission")
         @RequiresApi(Build.VERSION_CODES.S)
         override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
+            super.onConnectionStateChange(gatt, status, newState)
             if (!verifyBluetoothPermissions()) {
+                Log.e("BluetoothConnectionManager", "Permissions not granted during connection state change.")
                 return
             }
-            if (newState == BluetoothGatt.STATE_CONNECTED) {
-                onDeviceConnected?.invoke(gatt?.device?.name ?: "Unknown Device")
+
+            when (newState) {
+                BluetoothGatt.STATE_CONNECTED -> {
+                    Log.d("BluetoothConnectionManager", "Connected to GATT server, starting service discovery.")
+                    gatt?.discoverServices()
+                }
+                BluetoothGatt.STATE_DISCONNECTED -> {
+                    Log.d("BluetoothConnectionManager", "Disconnected from GATT server.")
+                    onDeviceDisconnected?.invoke()
+                }
+                else -> {
+                    Log.d("BluetoothConnectionManager", "Connection state changed to $newState.")
+                }
+            }
+        }
+
+        @RequiresApi(Build.VERSION_CODES.S)
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+            super.onServicesDiscovered(gatt, status)
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.d("BluetoothConnectionManager", "Services discovered successfully.")
                 enableUartNotifications()
-            } else if (newState == BluetoothGatt.STATE_DISCONNECTED) {
-                onDeviceDisconnected?.invoke()
+                onDeviceConnected?.invoke(gatt?.device?.name ?: "Unknown Device")
+            } else {
+                Log.w("BluetoothConnectionManager", "Service discovery failed with status: $status")
             }
         }
 
@@ -66,8 +92,24 @@ class BluetoothConnectionManager(private val context: Context) {
         ) {
             if (characteristic?.uuid == BluetoothManager.UART_TX_CHARACTERISTIC_UUID) {
                 val data = characteristic.value
-                // Handle the received data
-                Log.d("BluetoothConnectionManager", "Received data: ${data?.toString(Charsets.UTF_8)}")
+                val dataStr = data?.toString(Charsets.UTF_8).orEmpty().trim()
+                Log.d("BluetoothConnectionManager", "Received data: $dataStr")
+
+                // If empty, do nothing
+                if (dataStr.isEmpty()) return
+
+                // Parse JSON if it's not empty
+                try {
+                    val jsonObj = JSONObject(dataStr)
+                    val keys = jsonObj.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val value = jsonObj.get(key).toString()
+                        onSensorDataReceived(key, value)
+                    }
+                } catch (e: Exception) {
+                    Log.e("BluetoothConnectionManager", "JSON parsing error: ${e.message}")
+                }
             }
         }
     }
@@ -76,50 +118,35 @@ class BluetoothConnectionManager(private val context: Context) {
     @RequiresApi(Build.VERSION_CODES.S)
     private fun enableUartNotifications() {
         if (!verifyBluetoothPermissions()) {
+            Log.e("BluetoothConnectionManager", "Permissions not granted while enabling notifications.")
             return
         }
         val service = BluetoothManager.mBluetoothGatt?.getService(BluetoothManager.UART_SERVICE_UUID)
-        val characteristic = service?.getCharacteristic(BluetoothManager.UART_RX_CHARACTERISTIC_UUID)
-        BluetoothManager.mBluetoothGatt?.setCharacteristicNotification(characteristic, true)
-
-        val descriptor = characteristic?.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-        descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-        BluetoothManager.mBluetoothGatt?.writeDescriptor(descriptor)
-    }
-
-    @SuppressLint("MissingPermission")
-    @RequiresApi(Build.VERSION_CODES.S)
-    fun readUartData() {
-        if (!verifyBluetoothPermissions()) {
+        if (service == null) {
+            Log.e("BluetoothConnectionManager", "UART Service not found.")
             return
         }
-        val service = BluetoothManager.mBluetoothGatt?.getService(BluetoothManager.UART_SERVICE_UUID)
-        val characteristic = service?.getCharacteristic(BluetoothManager.UART_TX_CHARACTERISTIC_UUID)
-        BluetoothManager.mBluetoothGatt?.readCharacteristic(characteristic)
+        val characteristic = service.getCharacteristic(BluetoothManager.UART_TX_CHARACTERISTIC_UUID)
+        if (characteristic != null) {
+            val notificationSet = BluetoothManager.mBluetoothGatt?.setCharacteristicNotification(characteristic, true)
+            Log.d("BluetoothConnectionManager", "Set characteristic notification: $notificationSet")
+
+            val descriptor = characteristic.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+            if (descriptor != null) {
+                descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                val descriptorWrite = BluetoothManager.mBluetoothGatt?.writeDescriptor(descriptor)
+                Log.d("BluetoothConnectionManager", "Descriptor write initiated: $descriptorWrite")
+            } else {
+                Log.e("BluetoothConnectionManager", "Descriptor not found for UART TX characteristic.")
+            }
+        } else {
+            Log.e("BluetoothConnectionManager", "UART TX Characteristic not found, cannot enable notifications.")
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
     fun verifyBluetoothPermissions() : Boolean {
-        if (
-            ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) != PackageManager.PERMISSION_GRANTED ||
-            ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
-            ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                context as Activity,
-                arrayOf(
-                    Manifest.permission.BLUETOOTH,
-                    Manifest.permission.BLUETOOTH_CONNECT,
-                    Manifest.permission.BLUETOOTH_SCAN
-                ),
-                1
-            )
-
-            return !(ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) != PackageManager.PERMISSION_GRANTED ||
-                    ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
-                    ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED)
-        } else {
-            return true
-        }
+        return ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
     }
 }
